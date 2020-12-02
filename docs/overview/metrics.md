@@ -9,7 +9,7 @@ ZMX provides a `Layer` that is capable of collecting metrics from an ZIO-app and
 
 In essence, the layer provides different methods such as `counter`, `timer`, `histogram`, etc. which is collected by a queue-like structure (a `RingBuffer`) and then pushed to a statsd collector either when a given `bufferSize` is reached or a given `timeout` occurs sending whatever metrics are pending if any.
 
-Alternatively, a function of type `List[Metric[_]] => IO[Exception, List[Long]]` may be passed explicitly in order to, for instance, add metrics to a Prometheus `CollectorRegistry` (or whatever reporting mechanism) instead.
+Alternatively, a function of type `Chunk[Metric[_]] => IO[Exception, Chunk[Long]]` may be passed explicitly in order to, for instance, add metrics to a Prometheus `CollectorRegistry` (or whatever reporting mechanism) instead.
 
 First, some imports needed for the examples:
 
@@ -31,7 +31,14 @@ import java.io.InvalidObjectException
 You configure the Layer so:
 
 ```scala mdoc:silent
-  val config = new MetricsConfig(20, 5, 5.seconds, None, None)
+    val config = new MetricsConfig(
+      maximumSize = 20,
+      bufferSize = 5,
+      timeout = 5.seconds,
+      pollRate = 100.millis,
+      host = None,
+      port = None
+    )
 ```
  This tells ZMX to hold a maximum of 20 items at a time, to try and process items (push to statsd or add to prometheus registry, etc.) as soon as 5 items are collected and to otherwise send whatever is in the `RingBuffer` after 5 seconds.
  
@@ -86,7 +93,7 @@ If you are already instrumenting your app with Prometheus, then you can provide 
     lngs.orElseFail(e)
   }
 
-  val instrument: List[Metric[_]] => IO[Exception, List[Long]] =
+  val instrument: Chunk[Metric[_]] => IO[Exception, Chunk[Long]] =
     metrics => {
       for {
         longs <- IO.foreach(metrics)(matchMetric)

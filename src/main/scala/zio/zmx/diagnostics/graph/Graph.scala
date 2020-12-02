@@ -5,7 +5,7 @@ import scala.annotation.tailrec
 import com.github.ghik.silencer.silent
 import Graph._
 
-case class Graph[N, A, B](repr: Map[N, Context[N, A, B]]) {
+final case class Graph[N, A, B](repr: Map[N, Context[N, A, B]]) {
 
   def &(c: Context[N, A, B]): Graph[N, A, B] = {
     val Context(_, v, _, _) = c
@@ -186,10 +186,9 @@ case class Graph[N, A, B](repr: Map[N, Context[N, A, B]]) {
   @silent
   def extend[C](f: GraphDecomposition[N, A, B] => C): Graph[N, C, B] = {
     val self = this
-    map {
-      case Context(p, v, _, s) =>
-        val Decomposition(Some(c), g) = self decompose v
-        Context(p, v, f(GraphDecomposition(c, g)), s)
+    map { case Context(p, v, _, s) =>
+      val Decomposition(Some(c), g) = self decompose v
+      Context(p, v, f(GraphDecomposition(c, g)), s)
     }
   }
 
@@ -197,10 +196,9 @@ case class Graph[N, A, B](repr: Map[N, Context[N, A, B]]) {
     fold(Set.empty[Node[N, A]]) { case (Context(_, v, l, _), vs) => vs + Node(v, l) }
 
   def edges: Set[Edge[N, B]] =
-    fold(Set.empty[Edge[N, B]]) {
-      case (Context(p, v, _, s), es) =>
-        val ps = p.map { case (l, w) => Edge(w, v, l) } ++ s.map { case (l, w) => Edge(v, w, l) }
-        ps ++ es
+    fold(Set.empty[Edge[N, B]]) { case (Context(p, v, _, s), es) =>
+      val ps = p.map { case (l, w) => Edge(w, v, l) } ++ s.map { case (l, w) => Edge(v, w, l) }
+      ps ++ es
     }
 
   def contexts: Set[Context[N, A, B]] =
@@ -222,10 +220,9 @@ case class Graph[N, A, B](repr: Map[N, Context[N, A, B]]) {
     map { case Context(p, v, l, s) => Context(s, v, l, p) }
 
   def undirected: Graph[N, A, B] =
-    map {
-      case Context(p, v, l, s) =>
-        val ps = p ++ s
-        Context(ps, v, l, ps)
+    map { case Context(p, v, l, s) =>
+      val ps = p ++ s
+      Context(ps, v, l, ps)
     }
 
   def unlabel: Graph[N, Unit, Unit] = {
@@ -272,13 +269,12 @@ case class Graph[N, A, B](repr: Map[N, Context[N, A, B]]) {
   }
 
   override def toString =
-    contexts map {
-      case Context(_, v, l, s) =>
-        v.toString + ":" + l.toString + "->" + s.mkString("[", ",", "]")
+    contexts map { case Context(_, v, l, s) =>
+      v.toString + ":" + l.toString + "->" + s.mkString("[", ",", "]")
     } mkString "\n"
 }
 
-case class Context[N, A, B](inAdjacencies: Set[(B, N)], node: N, label: A, outAdjacencies: Set[(B, N)]) {
+final case class Context[N, A, B](inAdjacencies: Set[(B, N)], node: N, label: A, outAdjacencies: Set[(B, N)]) {
 
   def &(g: Graph[N, A, B]): Graph[N, A, B] =
     g & this
@@ -326,9 +322,9 @@ case class Context[N, A, B](inAdjacencies: Set[(B, N)], node: N, label: A, outAd
     outAdjacencies ++ inAdjacencies.filter(_._2 == node)
 }
 
-case class Decomposition[N, A, B](context: Option[Context[N, A, B]], rest: Graph[N, A, B])
+final case class Decomposition[N, A, B](context: Option[Context[N, A, B]], rest: Graph[N, A, B])
 
-case class GraphDecomposition[N, A, B](context: Context[N, A, B], rest: Graph[N, A, B]) {
+final case class GraphDecomposition[N, A, B](context: Context[N, A, B], rest: Graph[N, A, B]) {
 
   def node: N =
     context.node
@@ -351,9 +347,9 @@ case class GraphDecomposition[N, A, B](context: Context[N, A, B], rest: Graph[N,
     context & rest
 }
 
-case class Node[N, A](node: N, label: A)
+final case class Node[N, A](node: N, label: A)
 
-case class Edge[N, B](from: N, to: N, label: B)
+final case class Edge[N, B](from: N, to: N, label: B)
 
 object Graph {
 
