@@ -1,185 +1,175 @@
 package zio.zmx.prometheus
 
-import zio.Chunk
+import zio._
+import zio.zmx.metrics.MetricsDataModel.Label
 
-sealed abstract case class Metric[A <: Metric.Details](
+final case class PMetric(
   name: String,
   help: String,
-  labels: Chunk[(String, String)],
-  details: A
-)
+  labels: Chunk[Label],
+  details: PMetric.Details
+) {
+  override def toString(): String = {
+    val lbls = if (labels.isEmpty) "" else labels.map(l => s"${l._1}->${l._2}").mkString("{", ",", "}")
+    s"PMetric($name$lbls, $details)"
+  }
+}
 
-object Metric extends WithDoubleOrdering {
+object PMetric extends WithDoubleOrdering {
 
   sealed trait Details
 
-  sealed trait Counter extends Details {
-    def count: Double
-    def inc(v: Double): Counter
+  final case class Counter(count: Double) extends Details {
+    def inc(v: Double): Counter = copy(count = count + v)
   }
 
-  sealed trait Gauge extends Details {
-    def value: Double
-    def inc(v: Double): Gauge
-    def set(v: Double): Gauge
+  final case class Gauge(value: Double) extends Details {
+    def inc(v: Double): Gauge = copy(value = value + v)
+    def set(v: Double): Gauge = copy(value = v)
   }
 
-  sealed trait BucketType {
+  sealed trait Buckets {
     def boundaries: Chunk[Double]
-    def buckets(
-      maxAge: java.time.Duration = TimeSeries.defaultMaxAge,
-      maxSize: Int = TimeSeries.defaultMaxSize
-    ): Chunk[(Double, TimeSeries)] =
-      boundaries.map(d => (d, TimeSeries(maxAge, maxSize)))
+    def buckets: Chunk[(Double, Double)] =
+      boundaries.map(d => (d, 0d))
   }
 
-  object BucketType {
+  object Buckets {
 
-    final case class Manual(limits: Double*) extends BucketType {
+    final case class Manual(limits: Double*) extends Buckets {
       override def boundaries: Chunk[Double] =
         Chunk.fromArray(limits.toArray.sorted(dblOrdering)) ++ Chunk(Double.MaxValue).distinct
     }
 
-    final case class Linear(start: Double, width: Double, count: Int) extends BucketType {
+    final case class Linear(start: Double, width: Double, count: Int) extends Buckets {
       override def boundaries: Chunk[Double] =
         Chunk.fromArray(0.until(count).map(i => start + i * width).toArray) ++ Chunk(Double.MaxValue)
     }
 
-    final case class Exponential(start: Double, factor: Double, count: Int) extends BucketType {
+    final case class Exponential(start: Double, factor: Double, count: Int) extends Buckets {
       override def boundaries: Chunk[Double] =
         Chunk.fromArray(0.until(count).map(i => start * Math.pow(factor, i.toDouble)).toArray) ++ Chunk(Double.MaxValue)
     }
   }
 
-  sealed trait Histogram extends Details {
-    def buckets: Chunk[(Double, TimeSeries)]
-    def observe(v: Double, t: java.time.Instant): Histogram
-    def count: Double
-    def sum: Double
+  final case class Histogram(
+    buckets: Chunk[(Double, Double)],
+    count: Double,
+    sum: Double
+  ) extends Details { self =>
+    def observe(v: Double): Histogram = copy(
+      buckets = self.buckets.map(b => if (v <= b._1) (b._1, b._2 + 1d) else b),
+      count = self.count + 1,
+      sum = self.sum + v
+    )
   }
 
-  sealed trait Summary extends Details {
-    def samples: TimeSeries
-    def quantiles: Chunk[Quantile]
-    def observe(v: Double, t: java.time.Instant): Summary
-    def count: Double
-    def sum: Double
-  }
-
-  private object Details {
-    final case class CounterImpl(override val count: Double) extends Counter {
-      override def inc(v: Double): Counter = copy(count = count + v)
-    }
-
-    final case class GaugeImpl(override val value: Double) extends Gauge {
-      override def inc(v: Double): Gauge = copy(value = value + v)
-      override def set(v: Double): Gauge = copy(value = v)
-    }
-
-    final case class HistogramImpl(
-      override val buckets: Chunk[(Double, TimeSeries)],
-      override val count: Double,
-      override val sum: Double
-    ) extends Histogram { self =>
-      override def observe(v: Double, t: java.time.Instant): Histogram = copy(
-        buckets = self.buckets.map { case (b, ts) => if (v <= b) (b, ts.observe(v, t)) else (b, ts) },
-        count = self.count + 1,
-        sum = self.sum + v
-      )
-    }
-
-    final case class SummaryImpl(
-      override val samples: TimeSeries,
-      override val quantiles: Chunk[Quantile],
-      override val count: Double,
-      override val sum: Double
-    ) extends Summary { self =>
-      override def observe(v: Double, t: java.time.Instant): Summary = copy(
-        count = self.count + 1,
-        sum = self.sum + v,
-        samples = self.samples.observe(v, t)
-      )
-    }
+  final case class Summary(
+    samples: TimeSeries,
+    quantiles: Chunk[Quantile],
+    count: Double,
+    sum: Double
+  ) extends Details { self =>
+    def observe(v: Double, t: java.time.Instant): Summary = copy(
+      count = self.count + 1,
+      sum = self.sum + v,
+      samples = self.samples.observe(v, t)
+    )
   }
 
   // --------- Methods creating and using Prometheus counters
-  def counter(name: String, help: String, labels: Chunk[(String, String)] = Chunk.empty): Metric[Counter] =
-    new Metric[Counter](name, help, labels, Details.CounterImpl(0)) {}
+  def counter(name: String, help: String, labels: Chunk[Label] = Chunk.empty): PMetric =
+    PMetric(name, help, labels, Counter(0))
 
-  // The error case is a negative increment and is reflected by returning a null value
-  def incCounter(c: Metric[Counter], v: Double = 1.0d): Option[Metric[Counter]]                           =
-    if (v < 0) None else Some(new Metric[Counter](c.name, c.help, c.labels, c.details.inc(v)) {})
+  // The error case is a negative increment and is reflected by returning a None
+  def incCounter(m: PMetric, v: Double = 1.0d): Option[PMetric] =
+    m.details match {
+      case c: PMetric.Counter =>
+        if (v < 0) None else Some(PMetric(m.name, m.help, m.labels, c.inc(v)))
+      case _                  => None
+    }
 
   // --------- Methods creating and using Prometheus Gauges
 
   def gauge(
     name: String,
     help: String,
-    labels: Chunk[(String, String)] = Chunk.empty,
+    labels: Chunk[Label] = Chunk.empty,
     startAt: Double = 0.0
-  ): Metric[Gauge]                                                =
-    new Metric[Gauge](name, help, labels, Details.GaugeImpl(startAt)) {}
+  ): PMetric =
+    PMetric(name, help, labels, Gauge(startAt))
 
-  def incGauge(g: Metric[Gauge], v: Double = 1.0d): Metric[Gauge] =
-    new Metric[Gauge](g.name, g.help, g.labels, g.details.inc(v)) {}
+  def incGauge(m: PMetric, v: Double = 1.0d): Option[PMetric] =
+    m.details match {
+      case g: PMetric.Gauge => Some(PMetric(m.name, m.help, m.labels, g.inc(v)))
+      case _                => None
+    }
 
-  def decGauge(g: Metric[Gauge], v: Double = 1.0d): Metric[Gauge] = incGauge(g, -v)
+  def decGauge(m: PMetric, v: Double = 1.0d): Option[PMetric] = incGauge(m, -v)
+
+  def setGauge(m: PMetric, v: Double): Option[PMetric] =
+    m.details match {
+      case _: PMetric.Gauge => Some(PMetric(m.name, m.help, m.labels, Gauge(v)))
+      case _                => None
+    }
 
   // Set the value of the Gauge to the seconds corresponding to the given Instant
-  def setToInstant(g: Metric[Gauge], t: java.time.Instant): Metric[Gauge] =
-    new Metric[Gauge](g.name, g.help, g.labels, g.details.set((t.toEpochMilli / 1000L).toDouble)) {}
+  def setToInstant(m: PMetric, t: java.time.Instant): Option[PMetric] =
+    setGauge(m, t.toEpochMilli() / 1000.0d)
 
   // --------- Methods creating and using Prometheus Histograms
 
   def histogram(
     name: String,
     help: String,
-    labels: Chunk[(String, String)] = Chunk.empty,
-    buckets: BucketType,
-    maxAge: java.time.Duration = TimeSeries.defaultMaxAge,
-    maxSize: Int = TimeSeries.defaultMaxSize
-  ): Option[Metric[Histogram]] =
+    labels: Chunk[Label] = Chunk.empty,
+    buckets: Buckets
+  ): Option[PMetric] =
     if (labels.find(_._1.equals("le")).isDefined) None
     else
       Some(
-        new Metric[Histogram](
+        PMetric(
           name,
           help,
           labels,
-          Details.HistogramImpl(
-            buckets.buckets(maxAge, maxSize),
-            0,
-            0
-          )
-        ) {}
+          Histogram(buckets.buckets, 0, 0)
+        )
       )
 
-  def observeHistogram(h: Metric[Histogram], v: Double, t: java.time.Instant): Metric[Histogram] =
-    new Metric[Histogram](h.name, h.help, h.labels, h.details.observe(v, t)) {}
+  def observeHistogram(m: PMetric, v: Double): Option[PMetric] =
+    m.details match {
+      case h: Histogram =>
+        val updated = PMetric(m.name, m.help, m.labels, h.observe(v))
+        Some(updated)
+      case _            => None
+    }
 
   // --------- Methods creating and using Prometheus Histograms
 
   def summary(
     name: String,
     help: String,
-    labels: Chunk[(String, String)],
+    labels: Chunk[Label],
     maxAge: java.time.Duration = TimeSeries.defaultMaxAge,
-    maxSize: Int = TimeSeries.defaultMaxSize
+    maxSize: Int = TimeSeries.defaultMaxSize,
+    samples: Chunk[(Double, java.time.Instant)] = Chunk.empty
   )(
     quantiles: Quantile*
-  ): Option[Metric[Summary]] =
+  ): Option[PMetric] =
     if (labels.find(_._1.equals("quantile")).isDefined) None
     else
       Some(
-        new Metric[Summary](
+        PMetric(
           name,
           help,
           labels,
-          Details.SummaryImpl(TimeSeries(maxAge, maxSize), Chunk.fromIterable(quantiles), 0, 0)
-        ) {}
+          Summary(TimeSeries(maxAge, maxSize, samples), Chunk.fromIterable(quantiles), 0, 0)
+        )
       )
 
-  def observeSummary(s: Metric[Summary], v: Double, t: java.time.Instant): Metric[Summary] =
-    new Metric[Summary](s.name, s.help, s.labels, s.details.observe(v, t)) {}
-
+  def observeSummary(m: PMetric, v: Double, t: java.time.Instant): Option[PMetric] =
+    m.details match {
+      case s: PMetric.Summary => Some(PMetric(m.name, m.help, m.labels, s.observe(v, t)))
+      case _                  => None
+    }
 }
