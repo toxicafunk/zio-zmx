@@ -1,6 +1,6 @@
 package zio
 
-import zio.test.{ suite, DefaultRunnableSpec }
+import zio.test.DefaultRunnableSpec
 import zio.test._
 import zio.console._
 
